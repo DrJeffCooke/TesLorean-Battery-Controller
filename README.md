@@ -9,6 +9,9 @@ The TesLorean Battery Controller will accept instructions to activate the high v
 
 Code Pieces
 ===========
+
 BatteryDisplay CSV.py   - Reads in a CSV dumped by SavvyCAN from the BMS (relay_command_2.ino) and displays using PyGame
+
 relays_command_1.ino    - Simple serial port command of Arduino connected to relays driving 12v signals to the battery contactors
+
 relays_command_2.ino    - Sends signals (12v) to the BMS to enable data transmissions (cell voltages and temps)
