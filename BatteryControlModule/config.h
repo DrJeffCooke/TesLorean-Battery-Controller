@@ -1,11 +1,24 @@
 #ifndef __CONFIG_H__
 #define __CONFIG_H__
 
-#define LOW_CELL_VOLTAGE 280    // unit 1/100th Volt
-#define HIGH_CELL_VOLTAGE 365    // unit 1/100th Volt
-#define LOW_PACK_VOLTAGE  314     // Volts
-#define HIGH_PACK_VOLTAGE 408     // Volts
+// Cell Voltage warning levels, unit 1/100th Volt
+#define CELL_LOW_LOW_VOLTAGE 280
+#define CELL_LOW_VOLTAGE 300
+#define CELL_HIGH_VOLTAGE 345 
+#define CELL_HIGH_HIGH_VOLTAGE 365
 
+// Pack Voltage warning levels, unit volts
+#define PACK_LOW_LOW_VOLTAGE 314
+#define PACK_LOW_VOLTAGE 320
+#define PACK_HIGH_VOLTAGE  400
+#define PACK_HIGH_HIGH_VOLTAGE 408
+
+// Battery warning temps
+#define PACK_LOW_LOW_TEMP 40
+#define PACK_LOW_TEMP 60
+#define PACK_HIGH_TEMP 80
+#define PACK_HIGH_HIGH_TEMP 100
+    
 // Relay Statuses
 #define RELAY_ON 0
 #define RELAY_OFF 1

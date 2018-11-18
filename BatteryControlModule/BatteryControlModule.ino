@@ -5,6 +5,12 @@
 
   Based on Gen2 Charger Control Program by T de Bree, D.Maguire 2017-2018
   Additional work by C. Kidder
+  
+  Coding ToDos
+  
+  Coding Notes
+  - Temps are reported in F or C?
+  
 */
 
 #include <mcp2515.h>
@@ -44,6 +50,9 @@ int BattModFFrameID = 0x123;
 int BattPckFFrameID = 0x120;
 int BattVoltFrameID = 0x150;
 int BattVoltReqFrameID = 0x151;
+int BattWarnVFrameID = 0x0110;      // Voltage warning
+int BattWarnTFrameID = 0x0111;      // Temperature warning
+int BattWarnIFrameID = 0x0112;      // Isolation warning
 
 //********* HELPER ARRAYS ************
 byte group4mods[8][3] = {{0, 0, 1}, {1, 2, 2}, {3, 3, 4}, {4, 5, 5}, {6, 6, 7}, {7, 9, 9}, {9, 9, 9}, {9, 9, 9}}; // Modules for Group 4 voltages
@@ -85,11 +94,10 @@ void setup()
   pinMode(Relay_X357_4, OUTPUT);
   pinMode(Relay_X357_5, OUTPUT);
 
+  //// SERIAL PORT
   #ifdef debug 
     Serial.println("Initializing serial port (115200 baud)");
   #endif
-
-  //// SERIAL PORT
   // init the serial port - for status/debug
   while (!Serial);
   Serial.begin(115200);
@@ -105,7 +113,7 @@ void setup()
   can0.setBitrate(CAN_500KBPS);
   can0.setNormalMode();
   #ifdef debug
-  Serial.println("TesLorean CANbus initialized (500 kbps)");
+    Serial.println("TesLorean CANbus initialized (500 kbps)");
   #endif
 
   // Startup CAN  Battery bus
@@ -113,7 +121,7 @@ void setup()
   can1.setBitrate(CAN_500KBPS);
   can1.setNormalMode();
   #ifdef debug
-  Serial.println("Battery CANbus initialized (500 kbps)");
+    Serial.println("Battery CANbus initialized (500 kbps)");
   #endif
 
 }
@@ -162,7 +170,7 @@ void loop()
         // default is optional
         break;
     }
-  }
+  }  // end of Serial input check
 
   // Check for Request to change to a different Battery Contactors Status
   if (contactorsreqdstate != contactorsstate)
@@ -383,6 +391,8 @@ void can0decode(can_frame & frame)
 }
 
 // Output selected bytes from the CANbus frame data (used in debugging)
+// if fnums = 1, outputs data byte 0 (of 0..7)
+// if fnums = 5, outputs data byte 0 and 3 (of 0..7)
 void outframe(can_frame & frame, uint8_t fnums)
 {
   for (uint8_t f = 1; f < 129; f=f*2)
@@ -406,22 +416,25 @@ void can1decode(can_frame & frame)
 
   switch (frame.can_id)
   {
-    case 0x0302: // Bank temperatures (2 banks per module, 8 bank in pack)
+    case 0x0302: // Bank temperatures (2 banks per module, 4 modules in pack)
 
       #ifdef debug 
         Serial.print("Batt: 0x302 - Bank temperatures : ");
-        outframe(frame, (128+1));
+        outframe(frame, 0x0F);
         Serial.println();
       #endif
     
       // Get data bytes
-      by0 = ((frame.data[0] & 0x80) >> 7);
-      by7 = ((frame.data[7] & 0x04) >> 2);
+      by0 = ((frame.data[0] & 0x80) >> 7);      // b7 bit of by0, shift to b0 position
+      by7 = ((frame.data[7] & 0x04) >> 2);      // b4 bit if by7, shift to b0 position 
 
       // Test that the frame contains data
       if (by0 == 1)
       {
-        for (int framenum = 1; framenum < ((by7 == 1 ? 3 : 7) + 1) ; framenum++) {
+        // by7 indicates if this frame contains 4 or 7 data bytes
+        for (int framenum = 1; framenum < ((by7 == 1 ? 3 : 7) + 1) ; framenum++)
+        {
+          // by7 indicates which bank is reporting, which other bytes to reference, also temp is 0.5o
           moduletemps[(by7 == 0 ? (framenum - 1) : (framenum + 5))] = (frame.data[framenum] >> 1); // This temp is /2
         }
 
@@ -442,14 +455,14 @@ void can1decode(can_frame & frame)
 
       #ifdef debug 
         Serial.print("Batt: 0x216 - Total pack voltage : ");
-        outframe(frame, (4+2));
+        outframe(frame, 0x06);  // by1 & 2
         Serial.println();
       #endif
       
       // Get bytes
-      by1 = (frame.data[1] & 0x1F);
-      by2 = (frame.data[2]);
-      totalpackvolts = ((uint16_t)by1 << 8) + by2;
+      by1 = (frame.data[1] & 0x1F);     // lower 5 bits of by1
+      by2 = (frame.data[2]);            // all bits of by2
+      totalpackvolts = ((uint16_t)by1 << 8) + by2;      // Value is MSB by1 + LSB by2
 
       #ifdef debug 
         Serial.print("Total Pack Volts : ");
@@ -467,8 +480,8 @@ void can1decode(can_frame & frame)
       #endif
       
       // Get bytes ; tempF = value / 2 - 20
-      by1 = ((frame.data[1] >> 1) - 20);
-      by3 = ((frame.data[3] >> 1) - 20);
+      by1 = ((frame.data[1] >> 1) - 20);        // by1, div by 2, subtract 20
+      by3 = ((frame.data[3] >> 1) - 20);        // by3, div by 2, subtract 20
       packtemps[0] = by1;
       packtemps[1] = by3;
 
@@ -487,13 +500,14 @@ void can1decode(can_frame & frame)
   }
 
   // Check for the set of FrameIDs that carry cell voltages
-  if (frame.can_id == 0x0200 || frame.can_id == 0x0202 || frame.can_id == 0x0204 || frame.can_id == 0x0206 || frame.can_id == 0x0208) {
+  if (frame.can_id == 0x0200 || frame.can_id == 0x0202 || frame.can_id == 0x0204 || frame.can_id == 0x0206 || frame.can_id == 0x0208)
+  {
 
     #ifdef debug 
       Serial.print("Batt: ");
       Serial.print(frame.can_id,HEX);
       Serial.print(" - Cell voltages : ");
-      outframe(frame, (255));
+      outframe(frame, 0xFF);
       Serial.println();
     #endif
 
@@ -514,40 +528,58 @@ void can1decode(can_frame & frame)
     if (frame.can_id = 0x0208) {
       gpnum = 4;
     }
+    
+    // :)
+    // Alternative 1 liner to extract the group number from the frame id
+    // gpnum = (((uint16_t)frame.can_id & 0x000F) >> 1)
 
     // Get the module number
     byte mdnum = 0;
-    mdnum = frame.data[6] & 0x07;
+    mdnum = frame.data[6] & 0x07;       // get lower 3 bits of by6
 
     // Get the voltages
-    uint16_t vt1 = (uint16_t)((frame.data[0] & 0x1F) << 8) + (frame.data[1]);   //  last 5 bits of 0, all 8 bits of 1
-    uint16_t vt2 = (uint16_t)((frame.data[2] & 0x1F) << 8) + (frame.data[3]);   //  last 5 bits of 2, all 8 bits of 3
-    uint16_t vt3 = (uint16_t)(frame.data[4] >> 3) + ((frame.data[5] & 0xF8) >> 3);    //  all 8 bits of 4, first 5 bits of 5
+    uint16_t vt1 = (uint16_t)((frame.data[0] & 0x1F) << 8) + (frame.data[1]);   //  MSB last 5 bits of 0, LSB all 8 bits of 1
+    uint16_t vt2 = (uint16_t)((frame.data[2] & 0x1F) << 8) + (frame.data[3]);   //  MSB last 5 bits of 2, LSB all 8 bits of 3
+    uint16_t vt3 = (uint16_t)(frame.data[4] >> 3) + ((frame.data[5] & 0xF8) >> 3);    //  MSB all 8 bits of 4, LSB first 5 bits of 5
 
-    // Convert to 100th volt (divide by 16)
+    // Convert to 100th volt (divide by 16)         ???? Are voltages reported to 1600th of a volt ????
     vt1 = (vt1 >> 4);
     vt2 = (vt2 >> 4);
     vt3 = (vt3 >> 4);
 
     // Check for a new min cell voltage
     uint16_t mintriplet = 0;
-    mintriplet = min(vt1, min(vt2, vt3));
-    if (mincellvolts == 0) {mincellvolts = mintriplet;}
-    else {
+    mintriplet = min(vt1, min(vt2, vt3));       // get lowest voltage of the triplet
+    // check if new lowest cell voltage found
+    if (mincellvolts == 0)
+    {
+      mincellvolts = mintriplet;
+    }
+    else
+    {
       if (mintriplet < mincellvolts) {mincellvolts = mintriplet;}
     }
 
     // Check for a new max cell voltage
     uint16_t maxtriplet = 0;
-    maxtriplet = max(vt1, max(vt2, vt3));
-    if (maxcellvolts == 0) {maxcellvolts = maxtriplet;}
-    else {
+    maxtriplet = max(vt1, max(vt2, vt3));       // get highest voltage of the triplet
+    // check if new highest cell voltage found
+    if (maxcellvolts == 0)
+    {
+      maxcellvolts = maxtriplet;
+    }
+    else
+    {
       if (maxtriplet > maxcellvolts) {maxcellvolts = maxtriplet;}
     }
 
+    byte c1;
+    byte c2;
+    byte c3;
+
     if (gpnum != 4) {
 
-      // Get the cell numbers
+      // Get the cell numbers from the help pre-defined array
       byte c1 = startcellnum[gpnum];
       byte c2 = c1 + 1;
       byte c3 = c2 + 1;
@@ -556,12 +588,28 @@ void can1decode(can_frame & frame)
       cellvolts[c1][mdnum] = vt1;
       cellvolts[c2][mdnum] = vt2;
       cellvolts[c3][mdnum] = vt3;
-
+      
+      #ifdef debug 
+        Serial.print("Batt: Module ");
+        Serial.print(mdnum,DEC);
+        Serial.print(" [Cell ");
+        Serial.print(c1,DEC);
+        Serial.print("] ");
+        Serial.print(vt1,DEC);
+        Serial.print(" [Cell ");
+        Serial.print(c2,DEC);
+        Serial.print("] ");
+        Serial.print(vt2,DEC);
+        Serial.print(" [Cell ");
+        Serial.print(c3,DEC);
+        Serial.print("] ");
+        Serial.print(vt3,DEC);
+        Serial.println(" V");
+      #endif
     }
-    // gpnum = 4 // Code for the odd frame covering the rest of the voltages
-    else {
-
-      // Get the exception module numbers
+    else            // gpnum = 4 // Code for the odd frame covering the rest of the voltages
+    {
+      // Get the exception module numbers from the pre-defined helper array
       byte m1 = group4mods[mdnum][0];
       byte m2 = group4mods[mdnum][1];
       byte m3 = group4mods[mdnum][2];
@@ -570,35 +618,74 @@ void can1decode(can_frame & frame)
       byte cs = startcellnum[gpnum];
 
       // Test the first result
-      if (m1 != 9) {
-        if (m1 != m2) {
+      if (m1 != 9)
+      {
+        if (m1 != m2)
+        {
           cs += 1;
         }
-        cellvolts[m1][cs] = vt1;
+        cellvolts[cs][m1] = vt1;
+        c1 = cs;
       }
       // Test the second result
-      if (m2 != 9) {
-        if (m2 != m1) {
+      if (m2 != 9)
+      {
+        if (m2 != m1)
+        {
           cs = startcellnum[gpnum];
         }
-        cellvolts[m2][cs] = vt2;
+        cellvolts[cs][m2] = vt2;
+        c2 = cs;
         cs += 1;
       }
       // Test the third result
-      if (m3 != 9) {
-        if (m3 != m2) {
+      if (m3 != 9)
+      {
+        if (m3 != m2)
+        {
           cs = startcellnum[gpnum];
         }
-        cellvolts[m3][cs] = vt3;
+        cellvolts[cs][m3] = vt3;
+        c3 = cs;
       }
+
+      #ifdef debug 
+        Serial.print("Batt: ");
+        Serial.print(" Module ");
+        Serial.print(m1,DEC);
+        Serial.print(" [Cell ");
+        Serial.print(c1,DEC);
+        Serial.print("] ");
+        Serial.print(vt1,DEC);
+        Serial.print(" Module ");
+        Serial.print(m2,DEC);
+        Serial.print(" [Cell ");
+        Serial.print(c2,DEC);
+        Serial.print("] ");
+        Serial.print(vt2,DEC);
+        Serial.print(" Module ");
+        Serial.print(m3,DEC);
+        Serial.print(" [Cell ");
+        Serial.print(c3,DEC);
+        Serial.print("] ");
+        Serial.print(vt3,DEC);
+        Serial.println(" V");
+      #endif
+
     }
-  }
+  }     // end of voltage frame check
 
   // Check for the set of FrameIDs that carry the unknown data
-  if (frame.can_id == 0x0260 || frame.can_id == 0x0262 || frame.can_id == 0x0270 || frame.can_id == 0x0272 || frame.can_id == 0x0274) {
+  if (frame.can_id == 0x0260 || frame.can_id == 0x0262 || frame.can_id == 0x0270 || frame.can_id == 0x0272 || frame.can_id == 0x0274)
+  {
 
     #ifdef debug 
       Serial.println("Batt: 0x260/262/270/272/274 - Unknown data");
+      Serial.print("Batt: ");
+      Serial.print(frame.can_id,HEX);
+      Serial.print(" - Cell voltages : ");
+      outframe(frame, 0xFF);
+      Serial.println();
     #endif
 
     // Get the counter - last 5 bits of by1
@@ -663,7 +750,7 @@ void can1decode(can_frame & frame)
 
 void Controller_CAN_Messages()
 {
-  struct can_frame outframe;  //A structured variable according to due_can library for transmitting CAN data.
+  struct can_frame outframe;
 
   // Send out a Battery Contactor/BMS status message every 1sec
   if (timeBatteryStatus <  (millis() - DELAY_STATUSMSG))
@@ -675,8 +762,6 @@ void Controller_CAN_Messages()
     // Send Battery Status Update message
     outframe.can_id = BattStatFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
-    //outframe.extended = 0;          // Extended addresses - 0=11-bit 1=29bit
-    //outframe.rtr = 0;                 //No request
     outframe.data[0] = contactorsstate;   // Status of the HV contactors
     outframe.data[1] = bmsstate;          // Status of the BMS communications
     outframe.data[2] = lowByte(totalpackvolts);
@@ -686,6 +771,9 @@ void Controller_CAN_Messages()
     outframe.data[6] = lowByte(maxcellvolts);
     outframe.data[7] = highByte(maxcellvolts);
     can0.sendMessage(&outframe);
+    
+    // reset the timer
+    timeBatteryStatus = millis();
   }
 
   // Send out a Battery module temperature message
@@ -695,20 +783,50 @@ void Controller_CAN_Messages()
       Serial.println("Output: ???");
     #endif
     
-    // Send Battery Module Temps message
+    // Send Battery Module Temps message, units are 1=1 degrees
     outframe.can_id = BattModFFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
-    //outframe.extended = 0;          // Extended addresses - 0=11-bit 1=29bit
-    //outframe.rtr = 0;                 //No request
-    outframe.data[0] = contactorsstate;   // Status of the HV contactors
-    outframe.data[1] = bmsstate;          // Status of the BMS communications
-    outframe.data[2] = lowByte(totalpackvolts);
-    outframe.data[3] = highByte(totalpackvolts);
-    outframe.data[4] = lowByte(mincellvolts);
-    outframe.data[5] = highByte(mincellvolts);
-    outframe.data[6] = lowByte(maxcellvolts);
-    outframe.data[7] = highByte(maxcellvolts);
+    outframe.data[0] = (uint8_t)(moduletemps[0] >> 1);
+    outframe.data[1] = (uint8_t)(moduletemps[1] >> 1);
+    outframe.data[2] = (uint8_t)(moduletemps[2] >> 1);
+    outframe.data[3] = (uint8_t)(moduletemps[3] >> 1);
+    outframe.data[4] = (uint8_t)(moduletemps[4] >> 1);
+    outframe.data[5] = (uint8_t)(moduletemps[5] >> 1);
+    outframe.data[6] = (uint8_t)(moduletemps[6] >> 1);
+    outframe.data[7] = (uint8_t)(moduletemps[7] >> 1);
     can0.sendMessage(&outframe);
+    
+    // Test if temperature warning message needed
+    bool tempwarn = false;
+    byte warncode = 0;
+    uint16_t warntemp = 0;
+    for (int j = 0; j < 8; j++)
+    {
+      tempwarn = false;
+      if ((moduletemps[j]>>1)<PACK_LOW_TEMP){warncode = 0x0F;warntemp=(moduletemps[j]>>1);tempwarn=true;}
+      if ((moduletemps[j]>>1)<PACK_LOW_LOW_TEMP){warncode = 0x00;warntemp=(moduletemps[j]>>1);tempwarn=true;}
+      if ((moduletemps[j]>>1)>PACK_HIGH_TEMP){warncode = 0xF0;warntemp=(moduletemps[j]>>1);tempwarn=true;}
+      if ((moduletemps[j]>>1)<PACK_HIGH_HIGH_TEMP){warncode = 0xFF;warntemp=(moduletemps[j]>>1);tempwarn=true;}
+
+      if (tempwarn)
+      {
+        // Send Battery Pack Temps WARNING message
+        outframe.can_id = BattWarnTFrameID;
+        outframe.can_dlc = 8;            // Data payload 8 bytes
+        outframe.data[0] = warncode;    // FF = HH, F0 = H, 0F = L, 00 = LL
+        outframe.data[1] = lowByte(warntemp);
+        outframe.data[2] = highByte(warntemp);
+        outframe.data[3] = 1;       // Modules
+        outframe.data[4] = j;
+        outframe.data[5] = 0;
+        outframe.data[6] = 0;
+        outframe.data[7] = 0;
+        can0.sendMessage(&outframe);
+      }
+    }
+
+    // reset the timer
+    timeModTempsStatus = millis();
   }
 
   // Send out a Battery pack temperature message
@@ -724,8 +842,6 @@ void Controller_CAN_Messages()
     // Send Battery Pack Temps message
     outframe.can_id = BattPckFFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
-    //outframe.extended = 0;          // Extended addresses - 0=11-bit 1=29bit
-    //outframe.rtr = 0;                 //No request
     outframe.data[0] = lowByte(packtemps[0]);
     outframe.data[1] = highByte(packtemps[0]);
     outframe.data[2] = lowByte(packtemps[1]);
@@ -735,6 +851,38 @@ void Controller_CAN_Messages()
     outframe.data[6] = 0;
     outframe.data[7] = 0;
     can0.sendMessage(&outframe);
+    
+    // Test if a pack temp warning message warranted
+    if ((min(packtemps[0],packtemps[1]) < PACK_LOW_TEMP) || (max(packtemps[0],packtemps[1]) > PACK_HIGH_TEMP))
+    {
+        byte warncode = 0;
+        byte packhalf = 0;
+        uint16_t warntemp = 0;
+        if (packtemps[0] < PACK_LOW_TEMP){warncode = 0x0F;packhalf = 0;warntemp=packtemps[0];}
+        if (packtemps[1] < PACK_LOW_TEMP){warncode = 0x0F;packhalf = 1;warntemp=packtemps[1];}
+        if (packtemps[0] < PACK_LOW_LOW_TEMP){warncode = 0x00;packhalf = 0;warntemp=packtemps[0];}
+        if (packtemps[1] < PACK_LOW_LOW_TEMP){warncode = 0x00;packhalf = 1;warntemp=packtemps[1];}
+        if (packtemps[0] > PACK_HIGH_TEMP){warncode = 0xF0;packhalf = 0;warntemp=packtemps[0];}
+        if (packtemps[1] > PACK_HIGH_TEMP){warncode = 0xF0;packhalf = 1;warntemp=packtemps[1];}
+        if (packtemps[0] > PACK_HIGH_HIGH_TEMP){warncode = 0xFF;packhalf = 0;warntemp=packtemps[0];}
+        if (packtemps[1] > PACK_HIGH_HIGH_TEMP){warncode = 0xFF;packhalf = 1;warntemp=packtemps[1];}
+
+        // Send Battery Pack Temps WARNING message
+        outframe.can_id = BattWarnTFrameID;
+        outframe.can_dlc = 8;            // Data payload 8 bytes
+        outframe.data[0] = warncode;    // FF, F0, 0F, FF
+        outframe.data[1] = lowByte(packtemps[0]);
+        outframe.data[2] = highByte(packtemps[0]);
+        outframe.data[3] = 0;       // Pack
+        outframe.data[4] = packhalf;
+        outframe.data[5] = 0;
+        outframe.data[6] = 0;
+        outframe.data[7] = 0;
+        can0.sendMessage(&outframe);
+    }
+
+    // reset the timer
+    timePckTempsStatus = millis();
   }
 
   // Check if individual voltages are being transmitted (two per cycle) and if so send the next one
@@ -747,8 +895,6 @@ void Controller_CAN_Messages()
     // Send Battery Individual Cell Voltage
     outframe.can_id = BattVoltFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
-    //outframe.extended = 0;          // Extended addresses - 0=11-bit 1=29bit
-    //outframe.rtr = 0;                 //No request
     outframe.data[0] = cellvoltmodule;
     outframe.data[1] = cellvolttriplet;
     outframe.data[2] = lowByte(cellvolts[cellvolttriplet-1][cellvoltmodule-1]);
@@ -761,14 +907,16 @@ void Controller_CAN_Messages()
 
     // Progress to next one OR finish transmission
     cellvolttriplet = cellvolttriplet + 2;
-    if (cellvolttriplet > 12){    
+    if (cellvolttriplet > 12)
+    {    
       cellvolttriplet = 1;
       cellvoltmodule++;
-      if (cellvoltmodule > 8){
+      if (cellvoltmodule > 8)
+      {
         cellvoltmodule = 0;
         cellvolttriplet = 0; 
       }
     }
   }
 
-}
+}  // end of loop
