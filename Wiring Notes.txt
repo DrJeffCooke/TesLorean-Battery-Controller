@@ -1,0 +1,34 @@
+Arduino Mega & 2xMCP2515_CAN & MOSFET board for PWM control of Contactors
+
+MCP2515_CAN
+
+TesLorean CANBUS
+================
+VCC -> 5v
+GND -> Gnd
+CS  -> Pin 10 (Select Pin)
+SO  -> Pin 50
+SI  -> Pin 51
+SCK -> Pin 52
+INT -> Pin 2 (Arduino INT4)
+
+Battery CANBUS
+==============
+VCC -> 5v
+GND -> Gnd
+CS  -> Pin 9 (Select Pin)
+SO  -> Pin 50
+SI  -> Pin 51
+SCK -> Pin 52
+INT -> Pin 3 (arduino INT5)
+
+YYNMOS-4 PWM to Contactors
+==========================
+Pin3 -> PWM1 -> X358-7
+Pin4 -> PWM2 -> X358-8
+Pin5 -> PWM3 -> X358-9
+Pin6 -> PWM4 -> X358-10
+Pin7 -> MOSFET1 -> X357-4
+Pin8 -> MOSFET2 -> X357-5
+
+
