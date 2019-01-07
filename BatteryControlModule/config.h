@@ -2,16 +2,16 @@
 #define __CONFIG_H__
 
 // Cell Voltage warning levels, unit 1/100th Volt
-#define CELL_LOW_LOW_VOLTAGE 280
-#define CELL_LOW_VOLTAGE 300
-#define CELL_HIGH_VOLTAGE 345 
-#define CELL_HIGH_HIGH_VOLTAGE 365
+#define CELL_LOW_LOW_VOLTAGE 250
+#define CELL_LOW_VOLTAGE 260
+#define CELL_HIGH_VOLTAGE 350 
+#define CELL_HIGH_HIGH_VOLTAGE 360
 
 // Pack Voltage warning levels, unit volts
-#define PACK_LOW_LOW_VOLTAGE 314
-#define PACK_LOW_VOLTAGE 320
-#define PACK_HIGH_VOLTAGE  400
-#define PACK_HIGH_HIGH_VOLTAGE 408
+#define PACK_LOW_LOW_VOLTAGE 280
+#define PACK_LOW_VOLTAGE 292
+#define PACK_HIGH_VOLTAGE  393
+#define PACK_HIGH_HIGH_VOLTAGE 403
 
 // Battery warning temps
 #define PACK_LOW_LOW_TEMP 40
@@ -22,6 +22,10 @@
 // Relay Statuses
 #define RELAY_ON 0
 #define RELAY_OFF 1
+
+// CAN board Chip Select (CS) pins
+#define TESLOREAN_CAN_CS 10
+#define BATTERY_CAN_CS 9
 
 // Relay Connections - Connector X358 (contactors control)
 #define Relay_X358_7  3  // X358-7 K3: Main -VE [G]

@@ -13,16 +13,27 @@
   
 */
 
+//****** DEBUG VARIABLES
+#define debug 1
+
 #include <mcp2515.h>
 #include <SPI.h>
 #include "config.h"
 
-// Create the CAN objects, specific the 'Chip Select' line
-MCP2515 can0(10);   // TesLorean CAN bus - CS on line 10
-MCP2515 can1(9);    // Battery CAN Bus - CS on line 9
+// Variables for 
+#define StoredFrames 100
 
-//****** DEBUG VARIABLES
-#define debug 1
+// Array for preprepared CAN frames
+can_frame CANFrames[StoredFrames];
+
+// Counters tracking the add point and read point in the circular array
+volatile uint8_t addPointFrames = 0;
+volatile uint8_t readPointFrames = 0;
+volatile uint16_t netAddReadCount = 0;   // Adds increment, Reads decrement, only Read if <> 0
+
+// Create the CAN objects, specific the 'Chip Select' line
+MCP2515 can0(BATTERY_CAN_CS);    // Battery CAN Bus - CS on line 9
+MCP2515 can1(TESLOREAN_CAN_CS);   // TesLorean CAN bus - CS on line 10
 
 //********* TIME SINCE VARIABLES *************
 unsigned long timeContactorStatus = 0;
@@ -43,11 +54,11 @@ int incomingByte = 0;
 unsigned long timeLastStatusMsg = 0;
 
 //********* CAN IDs ******************
-int BattConnFrameID = 0x140;
+int BattConnFrameID = 0x132;
 int BMSConnFrameID = 0x142;
 int BattStatFrameID = 0x141;
-int BattModFFrameID = 0x123;
-int BattPckFFrameID = 0x120;
+int BattModFFrameID = 0x133;
+int BattPckFFrameID = 0x131;
 int BattVoltFrameID = 0x150;
 int BattVoltReqFrameID = 0x151;
 int BattWarnVFrameID = 0x0110;      // Voltage warning
@@ -72,19 +83,39 @@ byte frame270[8][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0
 byte frame272[8][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 byte frame274[2][3] = {{0, 0, 0}, {0, 0, 0}};
 
+// Interrupt activated when CAN frame arrives at the MCP2515_CAN board
+void irqBATHandler()
+{
+  uint8_t irq = can0.getInterrupts();
+
+  // check channel 0
+  if (irq & MCP2515::CANINTF_RX0IF)
+  {
+    if (can0.readMessage(MCP2515::RXB0, &CANFrames[addPointFrames]) == MCP2515::ERROR_OK)
+    {
+        // frame contains received from RXB0 message
+        addPointFrames = (addPointFrames + 1) % StoredFrames;
+        netAddReadCount++;
+    }
+  }
+            
+  // check channel 1
+  if (irq & MCP2515::CANINTF_RX1IF)
+  {
+    if (can0.readMessage(MCP2515::RXB1, &CANFrames[addPointFrames]) == MCP2515::ERROR_OK)
+    {
+      // frame contains received from RXB1 message
+      addPointFrames = (addPointFrames + 1) % StoredFrames;
+      netAddReadCount++;
+    }
+  } 
+}
+
 void setup()
 {
   #ifdef debug 
     Serial.println("Initializing Digital Pins for Relay control");
   #endif
-  
-  //// INITIALIZE RELAY PINS
-  digitalWrite(Relay_X358_7, RELAY_OFF); // X358-7 K3: Main -VE [G]
-  digitalWrite(Relay_X358_8, RELAY_OFF); // X358-8 Multifunction contactor [E]
-  digitalWrite(Relay_X358_9, RELAY_OFF); // X358-9 K1: Precharge contactor for Main [L]
-  digitalWrite(Relay_X358_10, RELAY_OFF); // X358-10 K2: Main +VE contactor [F]
-  digitalWrite(Relay_X357_4, RELAY_OFF); // X357-3 to 12v accessory wake up
-  digitalWrite(Relay_X357_5, RELAY_OFF); // X357-14 to 12v HV energy mgt communication enable
 
   //// SETUP OUTPUT LINES
   pinMode(Relay_X358_7, OUTPUT);
@@ -93,6 +124,14 @@ void setup()
   pinMode(Relay_X358_10, OUTPUT);
   pinMode(Relay_X357_4, OUTPUT);
   pinMode(Relay_X357_5, OUTPUT);
+    
+  //// INITIALIZE RELAY PINS
+  digitalWrite(Relay_X358_7, RELAY_OFF); // X358-7 K3: Main -VE [G]
+  digitalWrite(Relay_X358_8, RELAY_OFF); // X358-8 Multifunction contactor [E]
+  digitalWrite(Relay_X358_9, RELAY_OFF); // X358-9 K1: Precharge contactor for Main [L]
+  digitalWrite(Relay_X358_10, RELAY_OFF); // X358-10 K2: Main +VE contactor [F]
+  digitalWrite(Relay_X357_4, RELAY_OFF); // X357-3 to 12v accessory wake up
+  digitalWrite(Relay_X357_5, RELAY_OFF); // X357-14 to 12v HV energy mgt communication enable
 
   //// SERIAL PORT
   #ifdef debug 
@@ -105,25 +144,29 @@ void setup()
   // init the SPI communications
   SPI.begin();
 
-  //// TIMERS AND INTERRUPTS
-  //  Timer3.attachInterrupt(Controller_CAN_Messages).start(90000); // charger messages every 100ms
+  // Initialize the array pointers
+  addPointFrames = 0;
+  readPointFrames = 0;
+  netAddReadCount = 0;
 
-  // Startup CAN  TesLorean bus
+  // Startup CAN Battery bus
   can0.reset();
-  can0.setBitrate(CAN_500KBPS);
+  can0.setBitrate(CAN_1000KBPS);
   can0.setNormalMode();
   #ifdef debug
-    Serial.println("TesLorean CANbus initialized (500 kbps)");
+    Serial.println("Battery CANbus initialized (1000 kbps)");
   #endif
 
-  // Startup CAN  Battery bus
+  // Startup CAN  TesLorean bus
   can1.reset();
   can1.setBitrate(CAN_500KBPS);
   can1.setNormalMode();
   #ifdef debug
-    Serial.println("Battery CANbus initialized (500 kbps)");
+    Serial.println("TesLorean CANbus initialized (500 kbps)");
   #endif
 
+  // Connect the interrupt to the CAN frame trigger
+  attachInterrupt(digitalPinToInterrupt(2), irqBATHandler, LOW);
 }
 
 void loop()
@@ -131,22 +174,27 @@ void loop()
   // Define CAN Frame variable structure
   struct can_frame incoming;
 
-  // Check for instructions on the TesLorean CAN bus
-  if (can0.readMessage(&incoming) == MCP2515::ERROR_OK)
+  // Check for a frame ready to read (provided by interrupt)
+  if (netAddReadCount > 0)
   {
-    #ifdef debug 
-      Serial.println("CAN frame available on TesLorean bus - decoding");
-    #endif
-    can0decode(incoming);
+    if (readPointFrames != addPointFrames)
+    {
+      canBATTERYdecode(CANFrames[readPointFrames]);
+      readPointFrames = (readPointFrames + 1) % StoredFrames;
+      if(netAddReadCount > 0){netAddReadCount--;}
+      #ifdef debug 
+        Serial.println("CAN frame available on TesLorean bus - decoding");
+      #endif
+    }
   }
 
-  // Check for data from the Chevy Spark Battery CAN bus
+  // Check for data from the TesLorean CAN bus
   if (can1.readMessage(&incoming) == MCP2515::ERROR_OK)
   {
     #ifdef debug 
       Serial.println("CAN frame available on Battery bus - decoding");
     #endif
-    can1decode(incoming);
+    canTESLOREANdecode(incoming);
   }
 
   // Selectively send out status and informational messages
@@ -331,11 +379,11 @@ void loop()
 }
 
 // Check for Instructions on the TesLorean CAN bus
-void can0decode(can_frame & frame)
+void canTESLOREANdecode(can_frame & frame)
 {
   switch (frame.can_id)
   {
-    case 0x140: // BattConnFrameID : Battery HV Activation/Deactivation
+    case 0x132: // BattConnFrameID : Battery HV Activation/Deactivation
 
       #ifdef debug 
         Serial.println("TesL: 0x140 - Battery HV Activate/Deactivate");
@@ -409,7 +457,7 @@ void outframe(can_frame & frame, uint8_t fnums)
 }
 
 // Decode messages from the Chevy Spark BMS
-void can1decode(can_frame & frame)
+void canBATTERYdecode(can_frame & frame)
 {
   // Temp variables
   byte by0, by1, by2, by3, by4, by6, by7;
