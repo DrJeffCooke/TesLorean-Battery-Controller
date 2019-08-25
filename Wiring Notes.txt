@@ -32,3 +32,20 @@ Pin7 -> MOSFET1 -> X357-4
 Pin8 -> MOSFET2 -> X357-5
 
 
+======================================
+
+  //// SETUP OUTPUT LINES
+  pinMode(Relay_X358_7, OUTPUT);
+  pinMode(Relay_X358_8, OUTPUT);
+  pinMode(Relay_X358_9, OUTPUT);
+  pinMode(Relay_X358_10, OUTPUT);
+  pinMode(Relay_X357_4, OUTPUT);
+  pinMode(Relay_X357_5, OUTPUT);
+    
+  //// INITIALIZE RELAY PINS
+  digitalWrite(Relay_X358_7, RELAY_OFF); // X358-7 K3: Main -VE [G]
+  digitalWrite(Relay_X358_8, RELAY_OFF); // X358-8 Multifunction contactor [E]
+  digitalWrite(Relay_X358_9, RELAY_OFF); // X358-9 K1: Precharge contactor for Main [L]
+  digitalWrite(Relay_X358_10, RELAY_OFF); // X358-10 K2: Main +VE contactor [F]
+  digitalWrite(Relay_X357_4, RELAY_OFF); // X357-3 to 12v accessory wake up
+  digitalWrite(Relay_X357_5, RELAY_OFF); // X357-14 to 12v HV energy mgt communication enable

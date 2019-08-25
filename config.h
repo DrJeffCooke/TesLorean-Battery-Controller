@@ -13,11 +13,17 @@
 #define PACK_HIGH_VOLTAGE  393
 #define PACK_HIGH_HIGH_VOLTAGE 403
 
-// Battery warning temps
-#define PACK_LOW_LOW_TEMP 40
-#define PACK_LOW_TEMP 60
-#define PACK_HIGH_TEMP 80
-#define PACK_HIGH_HIGH_TEMP 100
+// Battery warning temps in oC
+#define PACK_LOW_LOW_TEMP 0x58    // 4C or 40F
+#define PACK_LOW_TEMP 0x70        // 16C or 60F    
+#define PACK_HIGH_TEMP 0x86       // 27C or 81F
+#define PACK_HIGH_HIGH_TEMP 0x9C  // 38C or 100F
+
+// Battery warning temps in oF
+//#define PACK_LOW_LOW_TEMPF 40     // 4C or 40F
+//#define PACK_LOW_TEMPF 60         // 16C or 60F 
+//#define PACK_HIGH_TEMPF 80        // 27C or 81F
+//#define PACK_HIGH_HIGH_TEMPF 100  // 38C or 100F
     
 // Relay Statuses
 #define RELAY_ON 0
@@ -55,7 +61,7 @@
 #define DELAY_PRECHARGE 2000    // Max time (in ms) that the Pre-charger contactor is closed, and +VE open
 #define DELAY_INTERRELAY 500    // Time between the contactor actions
 #define DELAY_STATUSMSG 2000    // Time between battery status messages
-#define DELAY_MODFMSG 10000    // Time between battery module temp messages
-#define DELAY_PCKFMSG 30000    // Time between battery pack temp messages
+#define DELAY_MODFMSG 5000    // Time between battery module temp messages
+#define DELAY_PCKFMSG 8000    // Time between battery pack temp messages
 
 #endif

@@ -1,0 +1,47 @@
+Outgoing CAN Traffic
+============================
+int BattModFFrameID = 0x133;		// All Module Temps
+	- module temps 0-7
+int BattPckFFrameID = 0x131;		// Pack temp statuses
+	- lo/hi pack 0 temp
+	- lo/hi pack 1 temp
+	- lo/hi deltatotalvolts
+int BattVoltFrameID = 0x150;		// Transmit cell voltages (all)
+	- cellvolt module
+	- cellvolt triplet
+	- lo/hi cell voltage
+	- low/hi cell voltage
+int BattWarnTFrameID = 0x0111;      // Temperature warning
+	- warn FF/F0/0F/00
+	- lo/hi warntemp
+	- 1 = module, 0 = pack
+	- module num / pack half
+int BattStatFrameID = 0x141;		// Pack voltage status
+	- lo/hi total pack volts
+	- lo/hi min cell volts
+	- low/hi max cell volts
+int BattVoltFrameID = 0x150;		// Cell voltages report
+	- cell module
+	- cell triplet
+	- lo/hi cell voltage (triplet -1)
+	- lo/hi cell voltage (triplet)
+int BattWarnVFrameID = 0x0110;      // Voltage warning
+	- FF = HH, F0 = H, 0F = L, 00 = LL
+	- lo/hi voltage (Pack is Volts, Cell is 100th/Volt)
+	- 0 = Cell, 1 = Pack
+
+Not Used/Coded
+=============================
+int BattWarnIFrameID = 0x0112;      // Isolation warning
+
+Incoming CAN Traffic
+=============================
+0x132: // BattConnFrameID : Battery HV Activation/Deactivation
+data[0] 1 = Connect, 0 = Disconnect
+
+0x142: // BMSConnFrameID : BMS Activation/Deactivation
+data[0] 1 = Start, 0 = Stop
+
+0x151: // BattVoltReqFrameID : Start transmmission of individual voltages
+data[0:8] not interpreted
+

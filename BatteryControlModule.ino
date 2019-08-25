@@ -7,25 +7,43 @@
   Additional work by C. Kidder
   
   Coding ToDos
+  - DONE Converted moduletemps array to be single byte values for internal C, i.e. 0.5C offset -40
+  - DONE Convert packtemps to single byte internal representation
+
+  Coding Checks
+  - Code that pulls module temps is occassionally pulling Module 7 wrong, suspect
+    bits check as signalling a data point that isn't there
+
+  - Suspect that Pack temps are only produced by battery when the accessories are switched on
+    Reporting 0's consistently
+
+  - 
   
   Coding Notes
   - Temps are reported in F or C?
-  
+
+  // check
 */
 
 //****** DEBUG VARIABLES
-#define debug 1
+#define debug_setup 1
+#define debug_info 1
+//#define debug 1
 
 struct can_frame {
-    uint32_t  can_id;
+    uint16_t  can_id;
     uint8_t   can_dlc;
     uint8_t   data[8];
 };
+
+// Pulls on millis() less often
+unsigned long curtimemillis;
 
 //#include <mcp2515.h>
 #include <mcp_can.h>
 #include <SPI.h>
 #include "config.h"
+#include <avr/wdt.h>
 
 // Variables for the CAN traffic
 long unsigned int rxId;
@@ -42,10 +60,12 @@ can_frame CANFrames_can1[StoredFrames];
 // Counters tracking the add point and read point in the circular array
 volatile uint8_t addPointFrames_can0 = 0;
 volatile uint8_t readPointFrames_can0 = 0;
-volatile uint16_t netAddReadCount_can0 = 0;   // Adds increment, Reads decrement, only Read if <> 0
+volatile uint8_t netAddReadCount_can0 = 0;   // Adds increment, Reads decrement, only Read if <> 0
+volatile uint8_t canError_can0 = 0;
 volatile uint8_t addPointFrames_can1 = 0;
 volatile uint8_t readPointFrames_can1 = 0;
-volatile uint16_t netAddReadCount_can1 = 0;   // Adds increment, Reads decrement, only Read if <> 0
+volatile uint8_t netAddReadCount_can1 = 0;   // Adds increment, Reads decrement, only Read if <> 0
+volatile uint8_t canError_can1 = 0;
 
 // Create the CAN objects, specific the 'Chip Select' line
 MCP_CAN can0(BATTERY_CAN_CS);
@@ -56,78 +76,51 @@ unsigned long timeContactorStatus = 0;
 unsigned long timeBatteryStatus = 0;
 unsigned long timeModTempsStatus = 0;
 unsigned long timePckTempsStatus = 0;
+unsigned long timeSincePackVChange = 0;
 
 //********* STATE VARIABLES ******************
-int contactorsstate;      // Current state of the contactors
-int contactorsreqdstate;  // Requested state of the contactors
-int bmsstate;             // Current state of the BMS communications
-int bmsreqdstate;         // Requested state of the BMS communications
-int cellvoltmodule;       // 1-8 : Module to send volts status for 0x150
-int cellvolttriplet;      // 1-14 : Cell triplet to send volts status for 0x150
+uint8_t contactorsstate;      // Current state of the contactors
+uint8_t contactorsreqdstate;  // Requested state of the contactors
+uint8_t bmsstate;             // Current state of the BMS communications
+uint8_t bmsreqdstate;         // Requested state of the BMS communications
+uint8_t cellvoltmodule;       // 1-8 : Module to send volts status for 0x150
+uint8_t cellvolttriplet;      // 1-14 : Cell triplet to send volts status for 0x150
 
 //********* GENERAL VARIABLES ******************
-int incomingByte = 0;
+uint8_t incomingByte = 0;
 unsigned long timeLastStatusMsg = 0;
 
 //********* CAN IDs ******************
-int BattConnFrameID = 0x132;
-int BMSConnFrameID = 0x142;
-int BattStatFrameID = 0x141;
-int BattModFFrameID = 0x133;
-int BattPckFFrameID = 0x131;
-int BattVoltFrameID = 0x150;
-int BattVoltReqFrameID = 0x151;
-int BattWarnVFrameID = 0x0110;      // Voltage warning
-int BattWarnTFrameID = 0x0111;      // Temperature warning
-int BattWarnIFrameID = 0x0112;      // Isolation warning
+uint16_t BattConnFrameID = 0x132;
+uint16_t BMSConnFrameID = 0x142;
+uint16_t BattStatFrameID = 0x141;
+uint16_t BattModFFrameID = 0x133;
+uint16_t BattPckFFrameID = 0x131;
+uint16_t BattVoltFrameID = 0x150;
+uint16_t BattVoltReqFrameID = 0x151;
+uint16_t BattWarnVFrameID = 0x0110;      // Voltage warning
+uint16_t BattWarnTFrameID = 0x0111;      // Temperature warning
+uint16_t BattWarnIFrameID = 0x0112;      // Isolation warning
 
 //********* HELPER ARRAYS ************
-byte group4mods[8][3] = {{0, 0, 1}, {1, 2, 2}, {3, 3, 4}, {4, 5, 5}, {6, 6, 7}, {7, 9, 9}, {9, 9, 9}, {9, 9, 9}}; // Modules for Group 4 voltages
-byte startcellnum[5] = {0, 3, 6, 9, 12}; // cell voltage frames, starting triple voltage cell num
+uint8_t group4mods[8][3] = {{0, 0, 1}, {1, 2, 2}, {3, 3, 4}, {4, 5, 5}, {6, 6, 7}, {7, 9, 9}, {9, 9, 9}, {9, 9, 9}}; // Modules for Group 4 voltages
+uint8_t startcellnum[5] = {0, 3, 6, 9, 12}; // cell voltage frames, starting triple voltage cell num
 
 //********* DATA FROM BMS ******************
-uint16_t moduletemps[8] = {0, 0, 0, 0, 0, 0, 0, 0};       // 1 = 0.5F
+uint8_t moduletemps[8] = {0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78, 0x78};       // 1 = 0.5C, default to 20C which is 
 uint16_t totalpackvolts = 0;                              // 1 = 1V
 uint16_t priorpackvolts = 0;                             // Total voltage at prior reporting
-uint16_t packtemps[2] = {0, 0};                           // 1 = 1F
+uint8_t packtemps[2] = {0x78, 0x78};                           // 1 = 1F
 uint16_t cellvolts[14][8];                                // 14 cells in each of 8 modules, 1 = 1/100th V
 uint16_t mincellvolts = 0;                                // lowest individual cell voltage, 1 = 1/100th V
 uint16_t maxcellvolts = 0;                                // highest individual cell voltage, 1 = 1/100th V
-byte frame260[5][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-byte frame262[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-byte frame270[8][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-byte frame272[8][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
-byte frame274[2][3] = {{0, 0, 0}, {0, 0, 0}};
+uint8_t frame260[5][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+uint8_t frame262[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+uint8_t frame270[8][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+uint8_t frame272[8][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+uint8_t frame274[2][3] = {{0, 0, 0}, {0, 0, 0}};
 
 struct can_frame frame;
-
-// Interrupt activated when BATTCAN frame arrives at the MCP2515_CAN board
-void irqBATHandler()
-{
-  if(!digitalRead(BATTERY_CAN_INT))   // pin low if data on can0
-  {
-    can0.readMsgBuf(&CANFrames_can0[addPointFrames_can0].can_dlc, CANFrames_can0[addPointFrames_can0].data);
-    CANFrames_can0[addPointFrames_can0].can_id = can0.getCanId();
-
-    // frame contains received from RXB0 message
-    addPointFrames_can0 = (addPointFrames_can0 + 1) % StoredFrames;
-    netAddReadCount_can0++;    
-  }
-}
-
-// Interrupt activated when TESLCAN frame arrives at the MCP2515_CAN board
-void irqTESHandler()
-{
-  if(!digitalRead(TESLOREAN_CAN_INT))   // pin low if data on can1
-  {
-    can1.readMsgBuf(&CANFrames_can1[addPointFrames_can1].can_dlc, CANFrames_can1[addPointFrames_can1].data);
-    CANFrames_can1[addPointFrames_can1].can_id = can1.getCanId();
-
-    // frame contains received from RXB0 message
-    addPointFrames_can1 = (addPointFrames_can1 + 1) % StoredFrames;
-    netAddReadCount_can1++;    
-  }
-}
 
 // Mimicks the CAN routine from the prior library
 void sendMessage(MCP_CAN canx, can_frame & frame)
@@ -137,7 +130,7 @@ void sendMessage(MCP_CAN canx, can_frame & frame)
 
 void setup()
 {
-  #ifdef debug 
+  #ifdef debug_setup 
     Serial.println("Initializing Digital Pins for Relay control");
   #endif
 
@@ -158,7 +151,7 @@ void setup()
   digitalWrite(Relay_X357_5, RELAY_OFF); // X357-14 to 12v HV energy mgt communication enable
 
   //// SERIAL PORT
-  #ifdef debug 
+  #ifdef debug_setup 
     Serial.println("Initializing serial port (115200 baud)");
   #endif
   // init the serial port - for status/debug
@@ -181,9 +174,11 @@ void setup()
   //timeContactorStatus = millis();
   //timeBatteryStatus = millis();
   // Starts with Module power-up
-  timeLastStatusMsg = millis();
-  timeModTempsStatus = millis();
-  timePckTempsStatus = millis();
+  curtimemillis = millis();
+  timeLastStatusMsg = curtimemillis;
+  timeModTempsStatus = curtimemillis;
+  timePckTempsStatus = curtimemillis;
+  timeSincePackVChange = curtimemillis;
   
   // Prepare the interrupt pins
   pinMode(BATTERY_CAN_INT, INPUT);
@@ -191,53 +186,129 @@ void setup()
 
   // Startup CAN Battery bus
   can0.begin(CAN_1000KBPS);
-  #ifdef debug
+  #ifdef debug_setup
     Serial.println("Battery CANbus initialized (1000 kbps)");
   #endif
 
   // Startup CAN  TesLorean bus
   can1.begin(CAN_500KBPS);
-  #ifdef debug
+  #ifdef debug_setup
     Serial.println("TesLorean CANbus initialized (500 kbps)");
   #endif
 
   // Connect the interrupt to the CAN frame trigger
-  attachInterrupt(digitalPinToInterrupt(BATTERY_CAN_INT), irqBATHandler, LOW);
-  attachInterrupt(digitalPinToInterrupt(TESLOREAN_CAN_INT), irqTESHandler, LOW);
+  // attachInterrupt(digitalPinToInterrupt(BATTERY_CAN_INT), irqBATHandler, LOW);
+  // attachInterrupt(digitalPinToInterrupt(TESLOREAN_CAN_INT), irqTESHandler, LOW);
+
+  // Set the watchdog - 8 second to reset
+  wdt_enable(WDTO_8S);
+
+  // Output the instructions for frames
+  outputInstructions();
+}
+
+// Print out the instructions
+void outputInstructions()
+{
+  Serial.println("Instructions");  
+  Serial.println("'?' to reshow the instructions");
+  Serial.println("'a' activate the BMS");
+  Serial.println("'d' deactivate the BMS");
+  Serial.println("'c' close the contactors - enable power");
+  Serial.println("'o' open the contactors - shutdown power");
+  Serial.println("'r' report all cell voltages");
 }
 
 void loop()
 {
+  // Loop logic - preference reading in new CAN frames, if one is read in skip the processing
+  // Only run a process cycle when no arriving frames were waiting
+  bool readSuccess = false;
+
+  // Check CAN0 for Data - Battery CAN
+  if(!digitalRead(BATTERY_CAN_INT))   // pin low if data on can0
+  {
+    can0.readMsgBuf(&CANFrames_can0[addPointFrames_can0].can_dlc, CANFrames_can0[addPointFrames_can0].data);
+    CANFrames_can0[addPointFrames_can0].can_id = can0.getCanId();
+    readSuccess = true;
+    // Bump readPoint forward if overwritten
+    if(netAddReadCount_can0 > 0 && readPointFrames_can0 == addPointFrames_can0)
+    {
+        readPointFrames_can0 = (readPointFrames_can0 + 1) % StoredFrames;
+        netAddReadCount_can0--;
+    }
+    // Bump the addPoint forward
+    addPointFrames_can0 = (addPointFrames_can0 + 1) % StoredFrames;
+    if (netAddReadCount_can0 < StoredFrames){netAddReadCount_can0++;}    
+  }
+
+  // Check CAN1 for Data - TesLorean CAN
+  if(!digitalRead(TESLOREAN_CAN_INT))   // pin low if data on can1
+  {
+    can1.readMsgBuf(&CANFrames_can1[addPointFrames_can1].can_dlc, CANFrames_can1[addPointFrames_can1].data);
+    CANFrames_can1[addPointFrames_can1].can_id = can1.getCanId();
+    readSuccess = true;
+    // Bump readPoint forward if overwritten
+    if(netAddReadCount_can1 > 0 && readPointFrames_can1 == addPointFrames_can1)
+    {
+        readPointFrames_can1 = (readPointFrames_can1 + 1) % StoredFrames;
+        netAddReadCount_can1--;
+    }
+    // Bump the addPoint forward
+    addPointFrames_can1 = (addPointFrames_can1 + 1) % StoredFrames;
+    if (netAddReadCount_can1 < StoredFrames){netAddReadCount_can1++;}  
+  }
+  
   // Define CAN Frame variable structure
   struct can_frame incoming;
 
-  // Check for a frame ready to read from BATTCAN (provided by interrupt)
-  if (netAddReadCount_can0 > 0)
+  // If a frame was just read, skip processing until there is a break
+  if(!readSuccess)
   {
-    if (readPointFrames_can0 != addPointFrames_can0)
+    // Check for a frame ready to read from BATTCAN
+    can_frame frame0;
+    if (netAddReadCount_can0 > 0)
     {
-      canBATTERYdecode(CANFrames_can0[readPointFrames_can0]);
-      readPointFrames_can0 = (readPointFrames_can0 + 1) % StoredFrames;
-      if(netAddReadCount_can0 > 0){netAddReadCount_can0--;}
       #ifdef debug 
         Serial.println("CAN frame available on Battery bus - decoding");
       #endif
+      // Copy data into temp store
+      frame0.can_id = CANFrames_can0[readPointFrames_can0].can_id;
+      frame0.can_dlc = CANFrames_can0[readPointFrames_can0].can_dlc;
+      for (int i = 0; i < frame0.can_dlc; i++)
+      {
+        frame0.data[i] = CANFrames_can0[readPointFrames_can0].data[i];
+      }
+      readPointFrames_can0 = (readPointFrames_can0 + 1) % StoredFrames;
+      if(netAddReadCount_can0 > 0){netAddReadCount_can0--;}
+    
+      // Process frame
+      canBATTERYdecode(frame0);
     }
-  }
-
-  // Check for a frame ready to read from TESLCAN (provided by interrupt)
-  if (netAddReadCount_can1 > 0)
-  {
-    if (readPointFrames_can1 != addPointFrames_can1)
+  
+    // Check for a frame ready to read from TESLCAN
+    can_frame frame1;
+    if (netAddReadCount_can1 > 0)
     {
-      canTESLOREANdecode(CANFrames_can1[readPointFrames_can1]);
-      readPointFrames_can1 = (readPointFrames_can1 + 1) % StoredFrames;
-      if(netAddReadCount_can1 > 0){netAddReadCount_can1--;}
+    // Process frame
       #ifdef debug 
         Serial.println("CAN frame available on TesLorean bus - decoding");
       #endif
+      // Copy data into temp store
+      frame1.can_id = CANFrames_can1[readPointFrames_can1].can_id;
+      frame1.can_dlc = CANFrames_can1[readPointFrames_can1].can_dlc;
+      for (int i = 0; i < frame1.can_dlc; i++)
+      {
+        frame1.data[i] = CANFrames_can1[readPointFrames_can1].data[i];
+      }
+      readPointFrames_can1 = (readPointFrames_can1 + 1) % StoredFrames;
+      if(netAddReadCount_can1 > 0){netAddReadCount_can1--;}
+      
+      // Process the frame
+      canTESLOREANdecode(frame1);
     }
-  }
+
+  } // end !readSuccess (only process on non-receive cycles)
 
   // Check the Serial Bus for commands
   if (Serial.available())
@@ -246,12 +317,37 @@ void loop()
 
     switch (incomingByte)
     {
-      case 'd'://d for display
-        Serial.println();
-        Serial.print("Status : ");
-        Serial.println(incomingByte);
+      case '?': //d for debug
+        // Output the instructions for instructions
+        outputInstructions();
         break;
 
+      case 'a': //a for activate BMS
+        // Deactivate the battery data communications
+        bmsreqdstate = BMSCOMMSON;
+        break;
+        
+      case 'd': //d for deactivate BMS
+        // Activate the battery data communications
+        bmsreqdstate = BMSCOMMSOFF;
+        break;
+
+      case 'c': //c for contactors closed
+        // Set the contactors closed - power enabled
+        contactorsreqdstate = CONTACTORSCLOSED;
+        break;
+        
+      case 'o': //d for contactors open
+        // Set the contactors open - power disabled
+        contactorsreqdstate = CONTACTORSOPEN;
+        break;
+        
+      case 'r': //r for report cell voltages
+        // Set the counters that signal transmission underway
+        cellvoltmodule = 1;
+        cellvolttriplet = 1;
+        break;
+              
       default:
         // if nothing else matches, do the default
         // default is optional
@@ -262,16 +358,18 @@ void loop()
   // Check for Request to change to a different Battery Contactors Status
   if (contactorsreqdstate != contactorsstate)
   {
-
     // Request to CLOSE (activate) the battery contactors
     if (contactorsreqdstate == CONTACTORSCLOSED)
     {
+      // Catch current time
+      curtimemillis = millis();
+
       switch (contactorsstate)
       {
         case CONTACTORSOPEN:
 
-          #ifdef debug 
-            Serial.println("Prior status: CONTACTORSOPEN; New status: CONTACTORSNEGMUL");
+          #ifdef debug_info
+            Serial.println(F("Prior status: CONTACTORSOPEN; New status: CONTACTORSNEGMUL"));
           #endif
 
           // Switch on the -VE and Multifunction Contactors
@@ -282,16 +380,16 @@ void loop()
           contactorsstate = CONTACTORSNEGMUL;
 
           // Start the contactorsstatetimer
-          timeContactorStatus = millis();
+          timeContactorStatus = curtimemillis;
 
           break;
 
         case CONTACTORSNEGMUL:
           // Check that the require time has passed in this state
-          if (millis() > timeContactorStatus + DELAY_INTERRELAY)
+          if ((curtimemillis - timeContactorStatus) > DELAY_INTERRELAY)
           {
-            #ifdef debug 
-              Serial.println("Prior status: CONTACTORSNEGMUL; New status: CONTACTORSPRECRG");
+            #ifdef debug_info
+              Serial.println(F("Prior status: CONTACTORSNEGMUL; New status: CONTACTORSPRECRG"));
             #endif
 
             // Switch on the PreCharge Contactor
@@ -301,16 +399,16 @@ void loop()
             contactorsstate = CONTACTORSPRECRG;
 
             // Restart the contactorsstatetimer
-            timeContactorStatus = millis();
+            timeContactorStatus = curtimemillis;
           }
           break;
 
         case CONTACTORSPRECRG:
           // Check that the require time has passed in this state
-          if (millis() > timeContactorStatus + DELAY_PRECHARGE)
+          if ((curtimemillis - timeContactorStatus) > DELAY_PRECHARGE)
           {
-            #ifdef debug 
-              Serial.println("Prior status: CONTACTORSPRECRG; New status: CONTACTORSPREPOS");
+            #ifdef debug_info
+              Serial.println(F("Prior status: CONTACTORSPRECRG; New status: CONTACTORSPREPOS"));
             #endif
 
             // Switch on the Positive Contactor
@@ -320,16 +418,16 @@ void loop()
             contactorsstate = CONTACTORSPREPOS;
 
             // Restart the contactorsstatetimer
-            timeContactorStatus = millis();
+            timeContactorStatus = curtimemillis;
           }
           break;
 
         case CONTACTORSPREPOS:
           // Check that the require time has passed in this state
-          if (millis() > timeContactorStatus + DELAY_INTERRELAY)
+          if ((curtimemillis - timeContactorStatus) > DELAY_INTERRELAY)
           {
-            #ifdef debug 
-              Serial.println("Prior status: CONTACTORSPREPOS; New status: CONTACTORSCLOSED");
+            #ifdef debug_info
+              Serial.println(F("Prior status: CONTACTORSPREPOS; New status: CONTACTORSCLOSED"));
             #endif
 
             // Switch off the PreCharge Contactor
@@ -339,7 +437,7 @@ void loop()
             contactorsstate = CONTACTORSCLOSED;
 
             // Restart the contactorsstatetimer
-            timeContactorStatus = millis();
+            timeContactorStatus = curtimemillis;
           }
           break;
 
@@ -352,8 +450,8 @@ void loop()
     // Request to OPEN (deactivate) the battery contactors
     if (contactorsreqdstate == CONTACTORSOPEN)
     {
-      #ifdef debug 
-        Serial.println("New status: CONTACTORSOPEN");
+      #ifdef debug_info
+        Serial.println(F("New status: CONTACTORSOPEN"));
       #endif
 
       // Immediately deactivate all the contactors (open)
@@ -374,8 +472,8 @@ void loop()
     // Request to turn on the BMS communications
     if (bmsreqdstate == BMSCOMMSON)
     {
-      #ifdef debug 
-        Serial.println("BMS communications: ON");
+      #ifdef debug_info
+        Serial.println(F("BMS communications: ON"));
       #endif
       
       // Enable the signal lines
@@ -389,8 +487,8 @@ void loop()
     // Request to turn off the BMS communications
     if (bmsreqdstate == BMSCOMMSOFF)
     {
-      #ifdef debug 
-        Serial.println("BMS communications: OFF");
+      #ifdef debug_info 
+        Serial.println(F("BMS communications: OFF"));
       #endif
 
       // Disable the signal lines
@@ -402,33 +500,44 @@ void loop()
     }
   }
 
-  // Output a debug status message on regular frequency
-  #ifdef debug 
-  if (millis() > timeLastStatusMsg + DELAY_STATUSMSG)
-  {
-    Serial.println();
-    Serial.print("Time [");
-    Serial.print(millis());
-    Serial.print("] State: ");
-    Serial.println(contactorsstate);
+  // catch the current time
+  curtimemillis = millis();
 
-    timeLastStatusMsg = millis();
+  // Output a debug status message on regular frequency
+  if ((curtimemillis - timeLastStatusMsg) > DELAY_STATUSMSG)
+  {
+    #ifdef debug_info
+      Serial.println();
+      Serial.print("Time [");
+      Serial.print(millis());
+      Serial.print("] State: ");
+      Serial.println(contactorsstate);
+    #endif
+
+    timeLastStatusMsg = curtimemillis;
   }
-  #endif
 
   // CONTROLLER CAN MESSAGES 
   struct can_frame outframe;
 
-  // Send out a Battery Contactor/BMS status message every 1sec
-  if (millis() > timeBatteryStatus + DELAY_STATUSMSG)
+//  // catch the current time
+//  curtimemillis = millis();
+
+  // Send out a Battery Contactor/BMS status message every 1 sec  
+  if ((curtimemillis - timeBatteryStatus)> DELAY_STATUSMSG)
   {
     // reset the timer
-    timeBatteryStatus = millis();
+    timeBatteryStatus = curtimemillis;
 
     #ifdef debug 
       Serial.println("Output: Contactor states and battery voltages");
     #endif
-    
+
+    // Test if voltage warning message needed
+    bool voltwarn = false;
+    uint8_t voltcode = 0;
+    uint16_t warnvolt = 0;
+
     // Send Battery Status Update message
     outframe.can_id = BattStatFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
@@ -441,11 +550,6 @@ void loop()
     outframe.data[6] = lowByte(maxcellvolts);
     outframe.data[7] = highByte(maxcellvolts);
     sendMessage(can1, outframe);
-
-    // Test if voltage warning message needed
-    bool voltwarn = false;
-    byte voltcode = 0;
-    uint16_t warnvolt = 0;
 
     // Test Total Pack Voltage
     voltwarn = false;
@@ -480,7 +584,7 @@ void loop()
       if (mincellvolts < CELL_LOW_VOLTAGE){voltcode = 0x0F;warnvolt=mincellvolts;voltwarn=true;}
       if (mincellvolts < CELL_LOW_LOW_VOLTAGE){voltcode = 0x00;warnvolt=mincellvolts;voltwarn=true;}
       if (maxcellvolts > CELL_HIGH_VOLTAGE){voltcode = 0xF0;warnvolt=maxcellvolts;voltwarn=true;}
-      if (maxcellvolts < CELL_HIGH_HIGH_VOLTAGE){voltcode = 0xFF;warnvolt=maxcellvolts;voltwarn=true;}
+      if (maxcellvolts > CELL_HIGH_HIGH_VOLTAGE){voltcode = 0xFF;warnvolt=maxcellvolts;voltwarn=true;}
     }
 
     if (voltwarn)
@@ -500,11 +604,14 @@ void loop()
     }
   }
 
+//  // catch the current time
+//  curtimemillis = millis();
+
   // Send out a Battery module temperature message
-  if (millis() > timeModTempsStatus + DELAY_MODFMSG)
+  if ((curtimemillis - timeModTempsStatus) > DELAY_MODFMSG)
   {
     // reset the timer
-    timeModTempsStatus = millis();
+    timeModTempsStatus = curtimemillis;
 
     #ifdef debug 
       Serial.println("Output: Temperature status");
@@ -513,27 +620,30 @@ void loop()
     // Send Battery Module Temps message, units are 1=1 degrees
     outframe.can_id = BattModFFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
-    outframe.data[0] = (uint8_t)(moduletemps[0] >> 1);
-    outframe.data[1] = (uint8_t)(moduletemps[1] >> 1);
-    outframe.data[2] = (uint8_t)(moduletemps[2] >> 1);
-    outframe.data[3] = (uint8_t)(moduletemps[3] >> 1);
-    outframe.data[4] = (uint8_t)(moduletemps[4] >> 1);
-    outframe.data[5] = (uint8_t)(moduletemps[5] >> 1);
-    outframe.data[6] = (uint8_t)(moduletemps[6] >> 1);
-    outframe.data[7] = (uint8_t)(moduletemps[7] >> 1);
+    outframe.data[0] = moduletemps[0];
+    outframe.data[1] = moduletemps[1];
+    outframe.data[2] = moduletemps[2];
+    outframe.data[3] = moduletemps[3];
+    outframe.data[4] = moduletemps[4];
+    outframe.data[5] = moduletemps[5];
+    outframe.data[6] = moduletemps[6];
+    outframe.data[7] = moduletemps[7];
     sendMessage(can1, outframe);
     
     // Test if temperature warning message needed
     bool tempwarn = false;
-    byte warncode = 0;
-    uint16_t warntemp = 0;
+    uint8_t warncode = 0;
+    uint8_t warntemp = 0;
     for (int j = 0; j < 8; j++)
     {
       tempwarn = false;
-      if ((moduletemps[j]>>1)<PACK_LOW_TEMP){warncode = 0x0F;warntemp=(moduletemps[j]>>1);tempwarn=true;}
-      if ((moduletemps[j]>>1)<PACK_LOW_LOW_TEMP){warncode = 0x00;warntemp=(moduletemps[j]>>1);tempwarn=true;}
-      if ((moduletemps[j]>>1)>PACK_HIGH_TEMP){warncode = 0xF0;warntemp=(moduletemps[j]>>1);tempwarn=true;}
-      if ((moduletemps[j]>>1)>PACK_HIGH_HIGH_TEMP){warncode = 0xFF;warntemp=(moduletemps[j]>>1);tempwarn=true;}
+      if ((moduletemps[j]) != 0)
+      {
+        if (moduletemps[j]<PACK_LOW_TEMP){warncode = 0x0F;warntemp=moduletemps[j];tempwarn=true;}
+        if (moduletemps[j]<PACK_LOW_LOW_TEMP){warncode = 0x00;warntemp=moduletemps[j];tempwarn=true;}
+        if (moduletemps[j]>PACK_HIGH_TEMP){warncode = 0xF0;warntemp=moduletemps[j];tempwarn=true;}
+        if (moduletemps[j]>PACK_HIGH_HIGH_TEMP){warncode = 0xFF;warntemp=moduletemps[j];tempwarn=true;}
+      }
 
       if (tempwarn)
       {
@@ -541,8 +651,8 @@ void loop()
         outframe.can_id = BattWarnTFrameID;
         outframe.can_dlc = 8;            // Data payload 8 bytes
         outframe.data[0] = warncode;    // FF = HH, F0 = H, 0F = L, 00 = LL
-        outframe.data[1] = lowByte(warntemp);
-        outframe.data[2] = highByte(warntemp);
+        outframe.data[1] = warntemp;
+        outframe.data[2] = 0;
         outframe.data[3] = 1;       // Modules
         outframe.data[4] = j;
         outframe.data[5] = 0;
@@ -553,60 +663,87 @@ void loop()
     }
   }
 
+//  // catch the current time
+//  curtimemillis = millis();
+
   // Send out a Battery pack temperature message
-  if (millis() > timePckTempsStatus + DELAY_PCKFMSG)
+  if ((curtimemillis - timePckTempsStatus) > DELAY_PCKFMSG)
   {
     // reset the timer
-    timePckTempsStatus = millis();
+    timePckTempsStatus = curtimemillis;
 
     #ifdef debug 
       Serial.println("Output: Battery pack temperatures and voltage trend");
     #endif
     
     // Calculate the rate of voltage decline
-    uint16_t deltatotalvolts = (totalpackvolts - priorpackvolts) * (60000/DELAY_PCKFMSG);
-    
+    unsigned long timeSinceVoltageChange;
+    if (totalpackvolts != priorpackvolts)
+    {
+      // Get the time slice
+      timeSinceVoltageChange = curtimemillis - timeSincePackVChange;
+      // Update the timestamp for the voltage change
+      timeSincePackVChange = millis();
+    }
+    float minsSinceVoltageChange;
+    float voltchangerate;
+    minsSinceVoltageChange = timeSinceVoltageChange / 600;  // 100ths of a minute
+    voltchangerate = (totalpackvolts - priorpackvolts) / minsSinceVoltageChange;  // Volts per 100th of a minute
+    priorpackvolts = totalpackvolts;
+    int16_t voltchangerate2 = voltchangerate;
+        
     // Send Battery Pack Temps message
     outframe.can_id = BattPckFFrameID;
     outframe.can_dlc = 8;            // Data payload 8 bytes
-    outframe.data[0] = lowByte(packtemps[0]);
-    outframe.data[1] = highByte(packtemps[0]);
-    outframe.data[2] = lowByte(packtemps[1]);
-    outframe.data[3] = highByte(packtemps[1]);
-    outframe.data[4] = lowByte(deltatotalvolts);
-    outframe.data[5] = highByte(deltatotalvolts);
+    outframe.data[0] = 0;
+    if (packtemps[0] > 0x0F){outframe.data[0] = packtemps[0];} //lowByte(packtemps[0]);
+    outframe.data[1] = 0; // highByte(packtemps[0]);
+    outframe.data[2] = 0;
+    if (packtemps[1] > 0x0F){outframe.data[2] = packtemps[1];} //lowByte(packtemps[1]);
+    outframe.data[3] = 0; //highByte(packtemps[1]);
+    outframe.data[4] = lowByte(voltchangerate2);
+    outframe.data[5] = highByte(voltchangerate2);
     outframe.data[6] = 0;
     outframe.data[7] = 0;
     sendMessage(can1, outframe);
     
+    /*
+     * Pack Temperatures are not being reported from the BMS as they were in early runs
+     * no idea why - may be a 12v/5v issue on the enable lines
+     * 
     // Test if a pack temp warning message warranted
-    if ((min(packtemps[0],packtemps[1]) < PACK_LOW_TEMP) || (max(packtemps[0],packtemps[1]) > PACK_HIGH_TEMP))
+    if (packtemps[0] != 0 || packtemps[1] != 0)
     {
-        byte warncode = 0;
-        byte packhalf = 0;
-        uint16_t warntemp = 0;
-        if (packtemps[0] < PACK_LOW_TEMP){warncode = 0x0F;packhalf = 0;warntemp=packtemps[0];}
-        if (packtemps[1] < PACK_LOW_TEMP){warncode = 0x0F;packhalf = 1;warntemp=packtemps[1];}
-        if (packtemps[0] < PACK_LOW_LOW_TEMP){warncode = 0x00;packhalf = 0;warntemp=packtemps[0];}
-        if (packtemps[1] < PACK_LOW_LOW_TEMP){warncode = 0x00;packhalf = 1;warntemp=packtemps[1];}
-        if (packtemps[0] > PACK_HIGH_TEMP){warncode = 0xF0;packhalf = 0;warntemp=packtemps[0];}
-        if (packtemps[1] > PACK_HIGH_TEMP){warncode = 0xF0;packhalf = 1;warntemp=packtemps[1];}
-        if (packtemps[0] > PACK_HIGH_HIGH_TEMP){warncode = 0xFF;packhalf = 0;warntemp=packtemps[0];}
-        if (packtemps[1] > PACK_HIGH_HIGH_TEMP){warncode = 0xFF;packhalf = 1;warntemp=packtemps[1];}
-
-        // Send Battery Pack Temps WARNING message
-        outframe.can_id = BattWarnTFrameID;
-        outframe.can_dlc = 8;            // Data payload 8 bytes
-        outframe.data[0] = warncode;    // FF, F0, 0F, FF
-        outframe.data[1] = lowByte(packtemps[0]);
-        outframe.data[2] = highByte(packtemps[0]);
-        outframe.data[3] = 0;       // Pack
-        outframe.data[4] = packhalf;
-        outframe.data[5] = 0;
-        outframe.data[6] = 0;
-        outframe.data[7] = 0;
-        sendMessage(can1, outframe);
+    
+      if ((min(packtemps[0],packtemps[1]) < PACK_LOW_TEMP) || (max(packtemps[0],packtemps[1]) > PACK_HIGH_TEMP))
+      {
+          byte warncode = 0;
+          byte packhalf = 0;
+          uint8_t warntemp = 0;
+          if (packtemps[0] < PACK_LOW_TEMP){warncode = 0x0F;packhalf = 0;warntemp=packtemps[0];}
+          if (packtemps[1] < PACK_LOW_TEMP){warncode = 0x0F;packhalf = 1;warntemp=packtemps[1];}
+          if (packtemps[0] < PACK_LOW_LOW_TEMP){warncode = 0x00;packhalf = 0;warntemp=packtemps[0];}
+          if (packtemps[1] < PACK_LOW_LOW_TEMP){warncode = 0x00;packhalf = 1;warntemp=packtemps[1];}
+          if (packtemps[0] > PACK_HIGH_TEMP){warncode = 0xF0;packhalf = 0;warntemp=packtemps[0];}
+          if (packtemps[1] > PACK_HIGH_TEMP){warncode = 0xF0;packhalf = 1;warntemp=packtemps[1];}
+          if (packtemps[0] > PACK_HIGH_HIGH_TEMP){warncode = 0xFF;packhalf = 0;warntemp=packtemps[0];}
+          if (packtemps[1] > PACK_HIGH_HIGH_TEMP){warncode = 0xFF;packhalf = 1;warntemp=packtemps[1];}
+  
+          // Send Battery Pack Temps WARNING message
+          outframe.can_id = BattWarnTFrameID;
+          outframe.can_dlc = 8;            // Data payload 8 bytes
+          outframe.data[0] = warncode;    // FF, F0, 0F, FF
+          outframe.data[1] = warntemp; //lowByte(packtemps[0]);
+          outframe.data[2] = 0; //highByte(packtemps[0]);
+          outframe.data[3] = 0;       // Pack
+          outframe.data[4] = packhalf;
+          outframe.data[5] = 0;
+          outframe.data[6] = 0;
+          outframe.data[7] = 0;
+          sendMessage(can1, outframe);
+      }
     }
+    */
   }
 
   // Check if individual voltages are being transmitted (two per cycle) and if so send the next one
@@ -645,6 +782,9 @@ void loop()
       }
     }
   }
+
+  // Reset the watchdog
+  wdt_reset();
 }
 
 // Check for Instructions on the TesLorean CAN bus
@@ -708,8 +848,10 @@ void canTESLOREANdecode(can_frame & frame)
         Serial.print(frame.can_id, HEX);
         Serial.println(" - frame received");
       #endif
+
       break;
-  }
+
+   }
 }
 
 // Output a number of bytes from the frame
@@ -728,7 +870,7 @@ void outputframe(can_frame & frame, uint8_t fnums)
 void canBATTERYdecode(can_frame & frame)
 {
   // Temp variables
-  byte by0, by1, by2, by3, by4, by6, by7;
+  uint8_t by0, by1, by2, by3, by4, by6, by7;
 
   switch (frame.can_id)
   {
@@ -741,32 +883,21 @@ void canBATTERYdecode(can_frame & frame)
       #endif
     
       // Get data bytes
-//      by0 = ((frame.data[0] & 0x80) >> 7);      // b7 bit of by0, shift to b0 position
-//      by7 = ((frame.data[7] & 0x04) >> 2);      // b4 bit if by7, shift to b0 position 
       by0 = (frame.data[0] & 0x01);             // bit 0 from by0
       by7 = ((frame.data[7] & 0x20) >> 5);      // bit 5 from by7 -> shifted 5 times
 
       // Test that the frame contains data
       if (by0 == 1)
       {
-        // by7 indicates if this frame contains 3 or 7 data bytes
-        for (int framenum = 1; framenum < ((by7 == 1 ? 3 : 7) + 1) ; framenum++)
+        // by7 indicates if this frame contains 2 or 6 data bytes
+        for (int framenum = 1; framenum < (by7 == 0 ? 7 : 3) ; framenum++)
         {
-          // by7 indicates which bank is reporting, which other bytes to reference, also temp is 0.5o
-          moduletemps[(by7 == 0 ? (framenum - 1) : (framenum + 5))] = (frame.data[framenum] >> 1); // This temp is /2
+          // by7 indicates which bank is reporting, which other bytes to reference, also temp is 0.5oC, offset 40C
+          moduletemps[(by7 == 0 ? (framenum - 1) : (framenum + 5))] = frame.data[framenum];
         }
-
-        #ifdef debug 
-          Serial.print("Module Temps : ");
-          for (int m = 0; m < 8; m++)
-          {
-            Serial.print(moduletemps[m],DEC);
-            Serial.print(" ");
-          }
-          Serial.println();
-        #endif
         
-      }
+      } // frame contains data
+
       break;
 
     case 0x0216: // Total pack voltage
@@ -786,7 +917,7 @@ void canBATTERYdecode(can_frame & frame)
         Serial.print("Total Pack Volts : ");
         Serial.println(totalpackvolts, DEC);
       #endif
-      
+
       break;
 
     case 0x0460: // Pack halves temperatures
@@ -797,20 +928,20 @@ void canBATTERYdecode(can_frame & frame)
         Serial.println();
       #endif
       
-      // Get bytes ; tempF = value / 2 - 20
+      // Get bytes ; tempF = value / 2 - 40
       // Changed to -40 to match with ambient temps
-      by1 = ((frame.data[1] >> 1) - 30);        // by1, div by 2, subtract 40
-      by3 = ((frame.data[3] >> 1) - 30);        // by3, div by 2, subtract 40
+      by1 = frame.data[1];    //((frame.data[1] >> 1) - 40);        // by1, div by 2, subtract 40
+      by3 = frame.data[3];    //((frame.data[3] >> 1) - 40);        // by3, div by 2, subtract 40
       packtemps[0] = by1;
       packtemps[1] = by3;
 
       #ifdef debug 
         Serial.print("Pack Temp 1 : ");
-        Serial.println(packtemps[0], DEC);
+        Serial.println(packtemps[0], HEX);
         Serial.print("Pack Temp 2 : ");
-        Serial.println(packtemps[1], DEC);
+        Serial.println(packtemps[1], HEX);
       #endif
-      
+
       break;
 
     default:
@@ -1073,6 +1204,6 @@ void canBATTERYdecode(can_frame & frame)
         frame274[datainx][2] = b3;
       }
     }
-    // end of can1decode for CAN frames from the battery
-  }
+  }   // end of can1decode for CAN frames from the battery
+  
 }
